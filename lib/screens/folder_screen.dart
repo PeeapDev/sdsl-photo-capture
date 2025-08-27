@@ -36,15 +36,12 @@ class _FolderScreenState extends State<FolderScreen> {
   }
 
   Future<String> _createNewSession(String folderPath, String folderName) async {
-    final today = DateTime.now();
-    String two(int n) => n.toString().padLeft(2, '0');
-    final dateStr = '${today.year}-${two(today.month)}-${two(today.day)}';
-    final device = _deviceLabel ?? 'Device1';
-    String baseName = '${folderName}_${dateStr}_$device';
+    // Not used any more for auto session naming; kept for potential future use
+    const baseName = 'New folder';
     String candidate = p.join(folderPath, baseName);
     int i = 1;
     while (await Directory(candidate).exists()) {
-      candidate = p.join(folderPath, '${baseName}_$i');
+      candidate = p.join(folderPath, '$baseName ($i)');
       i++;
     }
     final dir = Directory(candidate);
@@ -53,11 +50,7 @@ class _FolderScreenState extends State<FolderScreen> {
   }
 
   Future<String?> _promptAndCreateNewSession(String folderPath, String folderName) async {
-    final today = DateTime.now();
-    String two(int n) => n.toString().padLeft(2, '0');
-    final dateStr = '${today.year}-${two(today.month)}-${two(today.day)}';
-    final device = _deviceLabel ?? 'Device1';
-    final defaultBase = '${folderName}_${dateStr}_$device';
+    const defaultBase = 'New folder';
 
     final ctrl = TextEditingController(text: defaultBase);
     final input = await showDialog<String>(
@@ -78,12 +71,12 @@ class _FolderScreenState extends State<FolderScreen> {
       ),
     );
     if (input == null) return null;
-    String baseName = input.trim().replaceAll(' ', '_');
+    String baseName = input.trim();
     if (baseName.isEmpty) baseName = defaultBase;
     String candidate = p.join(folderPath, baseName);
     int i = 1;
     while (await Directory(candidate).exists()) {
-      candidate = p.join(folderPath, '${baseName}_$i');
+      candidate = p.join(folderPath, '$baseName ($i)');
       i++;
     }
     final dir = Directory(candidate);
@@ -140,13 +133,11 @@ class _FolderScreenState extends State<FolderScreen> {
 
   Future<void> _createOrSelectFolder(String name) async {
     final base = await _appBaseDir();
-    final normalized = name.trim().replaceAll(' ', '_');
+    final normalized = name.trim();
     final folder = Directory(p.join(base.path, normalized));
     if (!await folder.exists()) {
       await folder.create(recursive: true);
     }
-    // Ensure at least one session folder exists
-    await _getLatestOrCreateSession(folder.path, normalized);
     await _loadFolders();
   }
 
@@ -223,21 +214,7 @@ class _FolderScreenState extends State<FolderScreen> {
     await SharePlus.instance.share(ShareParams(files: [XFile(zipPath)], text: 'Export for $folderName'));
   }
 
-  Future<String> _getLatestOrCreateSession(String folderPath, String folderName) async {
-    final dir = Directory(folderPath);
-    final subs = await dir.list(followLinks: false).toList();
-    final sessionDirs = subs.whereType<Directory>().toList();
-    if (sessionDirs.isEmpty) {
-      final today = DateTime.now();
-      final dateStr = '${today.year.toString().padLeft(4, '0')}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
-      final device = _deviceLabel ?? 'Device1';
-      final newSession = Directory(p.join(folderPath, '${folderName}_${dateStr}_$device'));
-      await newSession.create(recursive: true);
-      return newSession.path;
-    }
-    sessionDirs.sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
-    return sessionDirs.first.path;
-  }
+  // Removed auto session creation logic; folders can directly contain images and subfolders.
 
   @override
   Widget build(BuildContext context) {
@@ -295,14 +272,13 @@ class _FolderScreenState extends State<FolderScreen> {
                       child: InkWell(
                         borderRadius: BorderRadius.circular(16),
                         onTap: () async {
-                          final session = await _getLatestOrCreateSession(f.path, f.name);
                           if (!mounted) return;
                           Navigator.pushNamed(
                             context,
                             '/folderDetail',
                             arguments: {
                               'name': f.name,
-                              'path': session,
+                              'path': f.path, // open the main folder directly
                             },
                           );
                         },
@@ -336,7 +312,7 @@ class _FolderScreenState extends State<FolderScreen> {
                                     },
                                     itemBuilder: (ctx) => const [
                                       PopupMenuItem(value: 'export', child: Text('Export ZIP & Share')),
-                                      PopupMenuItem(value: 'new', child: Text('Add Folder (New Session)')),
+                                      PopupMenuItem(value: 'new', child: Text('New subfolder')),
                                     ],
                                   ),
                                 ],

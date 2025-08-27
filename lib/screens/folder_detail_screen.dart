@@ -23,25 +23,31 @@ class FolderDetailScreen extends StatefulWidget {
 }
 
 class _FolderDetailScreenState extends State<FolderDetailScreen> {
-  List<FileSystemEntity> _images = [];
+  List<File> _images = [];
+  List<Directory> _subfolders = [];
   bool _loading = true;
-  late String _activeSessionPath;
+  late String _currentPath;
+  late String _currentName;
 
   @override
   void initState() {
     super.initState();
-    _activeSessionPath = widget.sessionPath;
-    _loadImages();
+    _currentPath = widget.sessionPath;
+    _currentName = p.basename(_currentPath);
+    _loadContent();
   }
 
-  Future<void> _loadImages() async {
-    final dir = Directory(_activeSessionPath);
+  Future<void> _loadContent() async {
+    final dir = Directory(_currentPath);
     final exts = {'.jpg', '.jpeg', '.png', '.heic', '.heif'};
     final all = await dir.list(recursive: false, followLinks: false).toList();
-    final imgs = all.whereType<File>().where((f) => exts.contains(p.extension(f.path).toLowerCase())).toList();
-    imgs.sort((a, b) => File(b.path).lastModifiedSync().compareTo(File(a.path).lastModifiedSync()));
+    final folders = all.whereType<Directory>().toList()
+      ..sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
+    final imgs = all.whereType<File>().where((f) => exts.contains(p.extension(f.path).toLowerCase())).toList()
+      ..sort((a, b) => File(b.path).lastModifiedSync().compareTo(File(a.path).lastModifiedSync()));
     if (!mounted) return;
     setState(() {
+      _subfolders = folders;
       _images = imgs;
       _loading = false;
     });
@@ -51,16 +57,16 @@ class _FolderDetailScreenState extends State<FolderDetailScreen> {
     try {
       final tmp = await getTemporaryDirectory();
       final stamp = DateTime.now().millisecondsSinceEpoch;
-      final zipPath = p.join(tmp.path, '${widget.folderName}_$stamp.zip');
+      final zipPath = p.join(tmp.path, '${_currentName}_$stamp.zip');
       final encoder = ZipFileEncoder();
       encoder.create(zipPath);
-      encoder.addDirectory(Directory(_activeSessionPath));
+      encoder.addDirectory(Directory(_currentPath));
       encoder.close();
 
       await SharePlus.instance.share(
         ShareParams(
           files: [XFile(zipPath)],
-          text: 'Export from ${widget.folderName}',
+          text: 'Export from ${_currentName}',
         ),
       );
     } catch (e) {
@@ -73,13 +79,8 @@ class _FolderDetailScreenState extends State<FolderDetailScreen> {
 
   Future<void> _createNewSubfolder() async {
     try {
-      final parent = p.dirname(_activeSessionPath);
-      final today = DateTime.now();
-      String two(int n) => n.toString().padLeft(2, '0');
-      final dateStr = '${today.year}-${two(today.month)}-${two(today.day)}';
-      // Keep device label generic; detail screen doesn't resolve device info.
-      const device = 'Device1';
-      String defaultBase = '${widget.folderName}_${dateStr}_$device';
+      final parent = _currentPath;
+      const defaultBase = 'New folder';
 
       // Ask user for a custom name (prefilled with default)
       final nameCtrl = TextEditingController(text: defaultBase);
@@ -103,22 +104,21 @@ class _FolderDetailScreenState extends State<FolderDetailScreen> {
         },
       );
       if (input == null) return; // cancelled
-      String baseName = input.trim().replaceAll(' ', '_');
+      String baseName = input.trim();
       if (baseName.isEmpty) baseName = defaultBase;
       String candidate = p.join(parent, baseName);
       int i = 1;
       while (await Directory(candidate).exists()) {
-        candidate = p.join(parent, '${baseName}_$i');
+        candidate = p.join(parent, '$baseName ($i)');
         i++;
       }
       final dir = Directory(candidate);
       await dir.create(recursive: true);
       if (!mounted) return;
       setState(() {
-        _activeSessionPath = dir.path;
         _loading = true;
       });
-      await _loadImages();
+      await _loadContent();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('New subfolder created')),
@@ -135,7 +135,7 @@ class _FolderDetailScreenState extends State<FolderDetailScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.folderName),
+        title: Text(_currentName),
         centerTitle: true,
         actions: [
           PopupMenuButton<String>(
@@ -153,57 +153,105 @@ class _FolderDetailScreenState extends State<FolderDetailScreen> {
       floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () async {
-          await Navigator.pushNamed(context, CameraScreen.routeName, arguments: _activeSessionPath);
+          await Navigator.pushNamed(context, CameraScreen.routeName, arguments: _currentPath);
           // Reload images after returning from camera
-          if (mounted) _loadImages();
+          if (mounted) _loadContent();
         },
         icon: const Icon(Icons.camera_alt_outlined),
         label: const Text('Open Camera'),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Card(
-              elevation: 2,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-              child: const ListTile(
-                leading: CircleAvatar(child: Icon(Icons.photo_library_outlined)),
-                title: Text('Images'),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: _loading
-                  ? const Center(child: CircularProgressIndicator())
-                  : _images.isEmpty
-                      ? const Center(child: Text('No images yet'))
-                      : GridView.builder(
-                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 3,
-                            mainAxisSpacing: 6,
-                            crossAxisSpacing: 6,
-                          ),
-                          itemCount: _images.length,
-                          itemBuilder: (ctx, i) {
-                            final f = _images[i] as File;
-                            return ClipRRect(
-                              borderRadius: BorderRadius.circular(10),
-                              child: Image.file(
-                                f,
-                                fit: BoxFit.cover,
-                                errorBuilder: (_, __, ___) => const ColoredBox(
-                                  color: Color(0x11000000),
-                                  child: Center(child: Icon(Icons.broken_image)),
-                                ),
+        child: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (_subfolders.isNotEmpty) ...[
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 8),
+                      child: Text('Folders', style: TextStyle(fontWeight: FontWeight.w600)),
+                    ),
+                    SizedBox(
+                      height: 110,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: _subfolders.length,
+                        separatorBuilder: (_, __) => const SizedBox(width: 10),
+                        itemBuilder: (ctx, i) {
+                          final d = _subfolders[i];
+                          return GestureDetector(
+                            onTap: () {
+                              Navigator.pushNamed(
+                                context,
+                                '/folderDetail',
+                                arguments: {
+                                  'name': p.basename(d.path),
+                                  'path': d.path,
+                                },
+                              );
+                            },
+                            child: Container(
+                              width: 140,
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Theme.of(context).colorScheme.surface,
+                                borderRadius: BorderRadius.circular(16),
+                                boxShadow: [
+                                  BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2)),
+                                ],
                               ),
-                            );
-                          },
-                        ),
-            ),
-          ],
-        ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Icon(Icons.folder, size: 32),
+                                  Text(
+                                    p.basename(d.path),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 8),
+                    child: Text('Images', style: TextStyle(fontWeight: FontWeight.w600)),
+                  ),
+                  Expanded(
+                    child: _images.isEmpty
+                        ? const Center(child: Text('No images yet'))
+                        : GridView.builder(
+                            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: 3,
+                              mainAxisSpacing: 6,
+                              crossAxisSpacing: 6,
+                            ),
+                            itemCount: _images.length,
+                            itemBuilder: (ctx, i) {
+                              final f = _images[i];
+                              return ClipRRect(
+                                borderRadius: BorderRadius.circular(10),
+                                child: Image.file(
+                                  f,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) => const ColoredBox(
+                                    color: Color(0x11000000),
+                                    child: Center(child: Icon(Icons.broken_image)),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
       ),
     );
   }
