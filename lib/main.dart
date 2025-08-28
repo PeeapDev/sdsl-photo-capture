@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'screens/folder_screen.dart';
 import 'screens/camera_screen.dart';
 import 'screens/folder_detail_screen.dart';
+import 'screens/image_viewer_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -31,6 +32,13 @@ class SchoolPhotoApp extends StatelessWidget {
           return FolderDetailScreen(
             folderName: args['name']!,
             sessionPath: args['path']!,
+          );
+        },
+        '/imageViewer': (ctx) {
+          final args = ModalRoute.of(ctx)!.settings.arguments as Map<String, String>;
+          return ImageViewerScreen(
+            imagePath: args['path']!,
+            folderPath: args['folder']!,
           );
         },
       },

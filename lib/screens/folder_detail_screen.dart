@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import 'camera_screen.dart';
+import '../services/pin_service.dart';
 
 class FolderDetailScreen extends StatefulWidget {
   final String folderName;
@@ -35,6 +36,107 @@ class _FolderDetailScreenState extends State<FolderDetailScreen> {
     _currentPath = widget.sessionPath;
     _currentName = p.basename(_currentPath);
     _loadContent();
+  }
+
+  Future<bool> _ensureAndVerifyPin() async {
+    final has = await PinService.hasPin();
+    if (!has) {
+      final setOk = await _promptSetPin();
+      if (setOk != true) return false;
+    }
+    final ok = await _promptEnterPin();
+    return ok == true;
+  }
+
+  Future<bool?> _promptSetPin() async {
+    final c1 = TextEditingController();
+    final c2 = TextEditingController();
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Set 4-digit PIN'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: c1,
+              decoration: const InputDecoration(labelText: 'PIN'),
+              keyboardType: TextInputType.number,
+              obscureText: true,
+              maxLength: 4,
+            ),
+            TextField(
+              controller: c2,
+              decoration: const InputDecoration(labelText: 'Confirm PIN'),
+              keyboardType: TextInputType.number,
+              obscureText: true,
+              maxLength: 4,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () async {
+              if (c1.text.length == 4 && c1.text == c2.text) {
+                await PinService.setPin(c1.text);
+                if (context.mounted) Navigator.pop(ctx, true);
+              }
+            },
+            child: const Text('Save PIN'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<bool?> _promptEnterPin() async {
+    final c = TextEditingController();
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Enter PIN to Delete'),
+        content: TextField(
+          controller: c,
+          decoration: const InputDecoration(labelText: '4-digit PIN'),
+          keyboardType: TextInputType.number,
+          obscureText: true,
+          maxLength: 4,
+          onSubmitted: (_) async {
+            final ok = await PinService.verifyPin(c.text);
+            if (ctx.mounted) Navigator.pop(ctx, ok);
+          },
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () async {
+              final ok = await PinService.verifyPin(c.text);
+              if (ctx.mounted) Navigator.pop(ctx, ok);
+            },
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deleteImage(File f) async {
+    final allow = await _ensureAndVerifyPin();
+    if (!allow) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('PIN incorrect or cancelled.')));
+      return;
+    }
+    try {
+      if (await f.exists()) await f.delete();
+      await _loadContent();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Image deleted.')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+    }
   }
 
   Future<void> _loadContent() async {
@@ -236,14 +338,64 @@ class _FolderDetailScreenState extends State<FolderDetailScreen> {
                             itemCount: _images.length,
                             itemBuilder: (ctx, i) {
                               final f = _images[i];
-                              return ClipRRect(
+                              final name = p.basename(f.path);
+                              return Material(
+                                color: Colors.transparent,
                                 borderRadius: BorderRadius.circular(10),
-                                child: Image.file(
-                                  f,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (_, __, ___) => const ColoredBox(
-                                    color: Color(0x11000000),
-                                    child: Center(child: Icon(Icons.broken_image)),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(10),
+                                  onTap: () async {
+                                    await Navigator.pushNamed(
+                                      context,
+                                      '/imageViewer',
+                                      arguments: {
+                                        'path': f.path,
+                                        'folder': _currentPath,
+                                      },
+                                    );
+                                    if (mounted) _loadContent();
+                                  },
+                                  onLongPress: () async {
+                                    // Prompt delete with PIN
+                                    final confirm = await showDialog<bool>(
+                                      context: context,
+                                      builder: (ctx) => AlertDialog(
+                                        title: const Text('Delete image?'),
+                                        content: Text(name),
+                                        actions: [
+                                          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                                          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete')),
+                                        ],
+                                      ),
+                                    );
+                                    if (confirm == true) {
+                                      await _deleteImage(f);
+                                    }
+                                  },
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                                    children: [
+                                      Expanded(
+                                        child: ClipRRect(
+                                          borderRadius: BorderRadius.circular(10),
+                                          child: Image.file(
+                                            f,
+                                            fit: BoxFit.cover,
+                                            errorBuilder: (_, __, ___) => const ColoredBox(
+                                              color: Color(0x11000000),
+                                              child: Center(child: Icon(Icons.broken_image)),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        name,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(fontSize: 12),
+                                      ),
+                                    ],
                                   ),
                                 ),
                               );

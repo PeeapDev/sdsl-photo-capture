@@ -3,7 +3,9 @@ import 'dart:math';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
 import '../services/image_processor.dart';
 import '../widgets/face_overlay.dart';
@@ -20,33 +22,62 @@ class CameraScreen extends StatefulWidget {
 class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver {
   CameraController? _controller;
   List<CameraDescription> _cameras = [];
+  int _cameraIndex = 0; // track current camera
   bool _initializing = true;
   bool _isBusy = false;
-  late final String sessionPath;
+  String _sessionPath = '';
+  int _shots = 0; // per-session shot counter
 
-  // CR80 ratio = 3.375 x 2.125 => width:height ~ 1.588235294
-  static const double _cr80Ratio = 3.375 / 2.125;
+  // Portrait presets (width/height). Defaults to 35x45mm passport style.
+  static const Map<String, double> _presets = {
+    '35×45 mm': 35 / 45, // ~0.7778
+    '30×40 mm': 30 / 40, // 0.75
+    '2×2 in': 1.0,       // square
+  };
+  String _selectedPreset = '35×45 mm';
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Force portrait while on the camera screen
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+    ]);
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    sessionPath = ModalRoute.of(context)?.settings.arguments as String? ?? '';
+    _sessionPath = ModalRoute.of(context)?.settings.arguments as String? ?? '';
     _init();
   }
 
   Future<void> _init() async {
-    if (sessionPath.isEmpty) return;
+    if (_sessionPath.isEmpty) {
+      if (mounted) setState(() => _initializing = false);
+      return;
+    }
     final camStatus = await Permission.camera.request();
     if (!camStatus.isGranted) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Camera permission is required.')),
+        setState(() => _initializing = false);
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Camera permission needed'),
+            content: const Text('Please allow camera access to take photos.'),
+            actions: [
+              TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+              ElevatedButton(
+                onPressed: () async {
+                  Navigator.of(ctx).pop();
+                  await openAppSettings();
+                },
+                child: const Text('Open Settings'),
+              ),
+            ],
+          ),
         );
       }
       return;
@@ -54,26 +85,89 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
     try {
       _cameras = await availableCameras();
-      final back = _cameras.firstWhere(
-        (c) => c.lensDirection == CameraLensDirection.back,
-        orElse: () => _cameras.first,
-      );
+      // set default to back camera
+      _cameraIndex = _cameras.indexWhere((c) => c.lensDirection == CameraLensDirection.back);
+      if (_cameraIndex == -1) _cameraIndex = 0;
       _controller = CameraController(
-        back,
+        _cameras[_cameraIndex],
         ResolutionPreset.max,
         enableAudio: false,
       );
       await _controller!.initialize();
+      // Lock capture orientation to portrait
+      await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
     } catch (e) {
       debugPrint('Camera init error: $e');
     }
     if (mounted) setState(() => _initializing = false);
   }
 
+  Future<void> _switchCamera() async {
+    if (_cameras.isEmpty) return;
+    final next = (_cameraIndex + 1) % _cameras.length;
+    try {
+      setState(() => _initializing = true);
+      await _controller?.dispose();
+      _controller = CameraController(
+        _cameras[next],
+        ResolutionPreset.max,
+        enableAudio: false,
+      );
+      await _controller!.initialize();
+      // Lock capture orientation to portrait after switching
+      await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
+      setState(() {
+        _cameraIndex = next;
+        _initializing = false;
+      });
+    } catch (e) {
+      debugPrint('Switch camera error: $e');
+      if (mounted) setState(() => _initializing = false);
+    }
+  }
+
+  Future<Map<String, int>?> _detectFaceRect(String imagePath) async {
+    try {
+      final options = FaceDetectorOptions(
+        performanceMode: FaceDetectorMode.accurate,
+        enableContours: false,
+        enableLandmarks: false,
+        enableClassification: false,
+      );
+      final detector = FaceDetector(options: options);
+      final input = InputImage.fromFilePath(imagePath);
+      final faces = await detector.processImage(input);
+      await detector.close();
+      if (faces.isEmpty) return null;
+      // pick the largest face
+      Rect best = faces.first.boundingBox;
+      double bestArea = best.width * best.height;
+      for (final f in faces.skip(1)) {
+        final r = f.boundingBox;
+        final a = r.width * r.height;
+        if (a > bestArea) {
+          best = r;
+          bestArea = a;
+        }
+      }
+      return {
+        'x': best.left.round(),
+        'y': best.top.round(),
+        'width': best.width.round(),
+        'height': best.height.round(),
+      };
+    } catch (e) {
+      debugPrint('Face detect error: $e');
+      return null;
+    }
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _controller?.dispose();
+    // Restore orientations to allow all (system default)
+    SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     super.dispose();
   }
 
@@ -96,9 +190,13 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     setState(() => _isBusy = true);
     try {
       final file = await _controller!.takePicture();
+      // Enforce strict guide crop: ignore face rect so we always crop to preset aspect ratio
+      // If you want face-guided framing, restore: final faceRect = await _detectFaceRect(file.path);
+      final Map<String, int>? faceRect = null;
       final processed = await ImageProcessor.processToWhiteBackground(
         File(file.path),
-        targetAspectRatio: _cr80Ratio,
+        targetAspectRatio: _presets[_selectedPreset]!,
+        focusRectPx: faceRect,
       );
       if (!mounted) return;
       final savedPath = processed.path;
@@ -108,7 +206,8 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         MaterialPageRoute(
           builder: (_) => NamingScreen(
             imagePath: savedPath,
-            sessionPath: sessionPath,
+            sessionPath: _sessionPath,
+            targetAspectRatio: _presets[_selectedPreset]!,
           ),
         ),
       );
@@ -117,6 +216,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Saved: $result')),
         );
+        setState(() => _shots++);
       }
     } catch (e) {
       debugPrint('Capture error: $e');
@@ -143,22 +243,87 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         child: Stack(
           alignment: Alignment.center,
           children: [
-            Center(
-              child: AspectRatio(
-                // Show preview fitted into screen, overlay will show CR80 crop
-                aspectRatio: max(1, _controller!.value.aspectRatio),
-                child: CameraPreview(_controller!),
+            // Render preview in true portrait AR using previewSize
+            Builder(builder: (_) {
+              final size = _controller!.value.previewSize;
+              // On many devices, previewSize is in landscape (width > height). For portrait UI, flip it.
+              final portraitAR = size != null
+                  ? (size.height / size.width)
+                  : (1 / _controller!.value.aspectRatio);
+              return Center(
+                child: AspectRatio(
+                  aspectRatio: portraitAR,
+                  child: CameraPreview(_controller!),
+                ),
+              );
+            }),
+            // Portrait overlay with faint head/shoulders guide
+            FaceOverlay(cr80Ratio: _presets[_selectedPreset]!),
+            // Preset selector at top center
+            Positioned(
+              top: 12,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: _presets.keys.map((k) {
+                    final sel = k == _selectedPreset;
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: ChoiceChip(
+                        label: Text(k),
+                        selected: sel,
+                        onSelected: (v) {
+                          if (v) setState(() => _selectedPreset = k);
+                        },
+                        selectedColor: Colors.indigo,
+                        labelStyle: TextStyle(color: sel ? Colors.white : Colors.white70, fontSize: 12),
+                        backgroundColor: Colors.transparent,
+                        shape: StadiumBorder(side: BorderSide(color: Colors.white24)),
+                      ),
+                    );
+                  }).toList(),
+                ),
               ),
             ),
-            // CR80 and face overlay
-            const FaceOverlay(cr80Ratio: _cr80Ratio),
+            // Shots counter at top-right
+            Positioned(
+              top: 12,
+              right: 12,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  'Shots: $_shots',
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ),
             Positioned(
               bottom: 24,
-              child: ElevatedButton.icon(
-                onPressed: _isBusy ? null : _capture,
-                icon: const Icon(Icons.camera_alt, size: 28),
-                label: const Text('Capture', style: TextStyle(fontSize: 18)),
-                style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14)),
+              child: Row(
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: _isBusy ? null : _capture,
+                    icon: const Icon(Icons.camera_alt, size: 28),
+                    label: const Text('Capture', style: TextStyle(fontSize: 18)),
+                    style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14)),
+                  ),
+                  const SizedBox(width: 12),
+                  ElevatedButton.icon(
+                    onPressed: _initializing ? null : _switchCamera,
+                    icon: const Icon(Icons.cameraswitch),
+                    label: const Text('Switch'),
+                    style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14)),
+                  ),
+                ],
               ),
             ),
             Positioned(

@@ -1,19 +1,26 @@
 import 'dart:io';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
+import '../services/image_processor.dart';
 
 class NamingScreen extends StatefulWidget {
   final String imagePath; // processed temp image path
   final String sessionPath; // destination folder
-  const NamingScreen({super.key, required this.imagePath, required this.sessionPath});
+  final double targetAspectRatio; // width/height from camera preset
+  const NamingScreen({
+    super.key,
+    required this.imagePath,
+    required this.sessionPath,
+    required this.targetAspectRatio,
+  });
 
   @override
   State<NamingScreen> createState() => _NamingScreenState();
 }
 
 class _NamingScreenState extends State<NamingScreen> {
-  final _firstCtrl = TextEditingController();
-  final _lastCtrl = TextEditingController();
+  final _nameCtrl = TextEditingController();
   
 
   @override
@@ -23,27 +30,38 @@ class _NamingScreenState extends State<NamingScreen> {
 
   @override
   void dispose() {
-    _firstCtrl.dispose();
-    _lastCtrl.dispose();
+    _nameCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _save() async {
-    final first = _firstCtrl.text.trim();
-    final last = _lastCtrl.text.trim();
-    if (first.isEmpty || last.isEmpty) {
+    final name = _nameCtrl.text.trim();
+    if (name.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter first and last name.')),
+        const SnackBar(content: Text('Please enter a name.')),
       );
       return;
     }
-    final safeFirst = first.replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_');
-    final safeLast = last.replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_');
-    final filename = '${safeFirst}_$safeLast.jpg';
+    final safeName = name.replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_');
+    final filename = '$safeName.jpg';
     final destPath = '${widget.sessionPath}/$filename';
 
     final src = File(widget.imagePath);
     await src.copy(destPath);
+
+    // Background post-save processing: enforce white background and strict guide crop
+    // Run without blocking UI; replace file in place when done
+    unawaited(() async {
+      try {
+        final processed = await ImageProcessor.processToWhiteBackground(
+          File(destPath),
+          targetAspectRatio: widget.targetAspectRatio,
+          focusRectPx: null, // strict guide crop, ignore face bbox here
+        );
+        final outBytes = await processed.readAsBytes();
+        await File(destPath).writeAsBytes(outBytes, flush: true);
+      } catch (_) {}
+    }());
 
     if (!mounted) return;
     Navigator.pop(context, filename);
@@ -62,40 +80,20 @@ class _NamingScreenState extends State<NamingScreen> {
               child: Image.file(File(widget.imagePath), fit: BoxFit.contain),
             ),
             const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _firstCtrl,
-                    textCapitalization: TextCapitalization.words,
-                    decoration: const InputDecoration(
-                      labelText: 'First Name',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _lastCtrl,
-                    textCapitalization: TextCapitalization.words,
-                    decoration: const InputDecoration(
-                      labelText: 'Last Name',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-              ],
+            TextField(
+              controller: _nameCtrl,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Name',
+                border: OutlineInputBorder(),
+                hintText: 'e.g., John Doe',
+              ),
             ),
             const SizedBox(height: 12),
             ElevatedButton.icon(
               onPressed: _save,
               icon: const Icon(Icons.save),
-              label: const Text('Save as FirstName_LastName.jpg'),
+              label: const Text('Save'),
               style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
             ),
           ],

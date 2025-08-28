@@ -12,10 +12,10 @@ class FaceOverlay extends StatelessWidget {
         final h = constraints.maxHeight;
 
         // Compute guide rectangle that fits screen with CR80 ratio
-        double guideW = w * 0.9; // margin
+        double guideW = w * 0.8; // reduce width so framing requires less distance
         double guideH = guideW / cr80Ratio;
-        if (guideH > h * 0.8) {
-          guideH = h * 0.8;
+        if (guideH > h * 0.7) {
+          guideH = h * 0.7;
           guideW = guideH * cr80Ratio;
         }
 
@@ -36,18 +36,14 @@ class FaceOverlay extends StatelessWidget {
                 ),
               ),
             ),
-            // Simple face hint
+            // Faint head & shoulders guide inside the frame
             Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: const [
-                  Icon(Icons.account_circle, color: Colors.white70, size: 64),
-                  SizedBox(height: 4),
-                  Text(
-                    'Center face inside the frame',
-                    style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600),
-                  ),
-                ],
+              child: SizedBox(
+                width: guideW,
+                height: guideH,
+                child: CustomPaint(
+                  painter: _PortraitSilhouettePainter(),
+                ),
               ),
             ),
           ],
@@ -63,7 +59,7 @@ class _MaskPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = Colors.black54;
+    final paint = Paint()..color = Colors.black45;
     final rect = Offset.zero & size;
     final rrect = RRect.fromRectXY(
       Rect.fromCenter(
@@ -84,6 +80,54 @@ class _MaskPainter extends CustomPainter {
     canvas.drawRect(rect, paint);
     canvas.drawRRect(rrect, clearPaint);
     canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _PortraitSilhouettePainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final color = Colors.white.withOpacity(0.15);
+    final stroke = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+
+    final rect = Rect.fromLTWH(0, 0, size.width, size.height);
+    final center = rect.center;
+
+    // Head circle (upper third)
+    final headR = size.width * 0.18;
+    final headC = Offset(center.dx, rect.top + size.height * 0.28);
+    canvas.drawCircle(headC, headR, stroke);
+
+    // Shoulders/chest rounded shape (lower area)
+    final shoulderW = size.width * 0.55;
+    final shoulderH = size.height * 0.22;
+    final shoulder = RRect.fromRectAndCorners(
+      Rect.fromCenter(
+        center: Offset(center.dx, rect.top + size.height * 0.60),
+        width: shoulderW,
+        height: shoulderH,
+      ),
+      topLeft: const Radius.circular(60),
+      topRight: const Radius.circular(60),
+      bottomLeft: const Radius.circular(16),
+      bottomRight: const Radius.circular(16),
+    );
+    canvas.drawRRect(shoulder, stroke);
+
+    // Helper text
+    final tp = TextPainter(
+      text: const TextSpan(
+        text: 'Align head and shoulders within the frame',
+        style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: size.width);
+    tp.paint(canvas, Offset((size.width - tp.width) / 2, rect.bottom - 22));
   }
 
   @override

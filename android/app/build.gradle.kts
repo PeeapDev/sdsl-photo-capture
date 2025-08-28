@@ -8,7 +8,7 @@ plugins {
 android {
     namespace = "com.example.schoolphotocapture"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    // ndkVersion removed to avoid requiring a specific local NDK install
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
